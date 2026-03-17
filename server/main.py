@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -13,6 +14,10 @@ QUARTER_MAP = {
     'Q3-2025': ['2025-07', '2025-08', '2025-09'],
     'Q4-2025': ['2025-10', '2025-11', '2025-12']
 }
+
+TREND_PRIORITY = {"increasing": 0, "stable": 1, "decreasing": 2}
+
+restocking_orders: list = []
 
 def filter_by_month(items: list, month: Optional[str]) -> list:
     """Filter items by month/quarter based on order_date field"""
@@ -89,6 +94,8 @@ class DemandForecast(BaseModel):
     forecasted_demand: int
     trend: str
     period: str
+    unit_cost: float
+    lead_time_days: int
 
 class BacklogItem(BaseModel):
     id: str
@@ -119,6 +126,35 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockingRecommendation(BaseModel):
+    item_sku: str
+    item_name: str
+    trend: str
+    recommended_quantity: int
+    unit_cost: float
+    line_total: float
+    lead_time_days: int
+
+class RestockingOrderItem(BaseModel):
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+    line_total: float
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str
+    items: List[RestockingOrderItem]
+    total_cost: float
+    lead_time_days: int
+    created_date: str
+    expected_delivery: str
+    status: str
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingOrderItem]
 
 # API endpoints
 @app.get("/")
@@ -303,6 +339,64 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restocking/recommendations", response_model=List[RestockingRecommendation])
+def get_restocking_recommendations(budget: float = 0):
+    """Greedy budget fill: prioritize by trend (increasing > stable > decreasing), then by forecast gap."""
+    ranked = sorted(
+        demand_forecasts,
+        key=lambda f: (
+            TREND_PRIORITY.get(f["trend"], 99),
+            -(f["forecasted_demand"] - f["current_demand"]),
+        ),
+    )
+    selected = []
+    remaining = budget
+    for f in ranked:
+        qty = f["forecasted_demand"]
+        line_total = qty * f["unit_cost"]
+        if line_total <= remaining:
+            selected.append({
+                "item_sku": f["item_sku"],
+                "item_name": f["item_name"],
+                "trend": f["trend"],
+                "recommended_quantity": qty,
+                "unit_cost": f["unit_cost"],
+                "line_total": line_total,
+                "lead_time_days": f["lead_time_days"],
+            })
+            remaining -= line_total
+    return selected
+
+@app.post("/api/restocking/orders", response_model=RestockingOrder, status_code=201)
+def create_restocking_order(req: CreateRestockingOrderRequest):
+    """Submit a restocking order. Lead time = max lead time across all included items."""
+    if not req.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+    total = sum(item.line_total for item in req.items)
+    lead = max(
+        (f["lead_time_days"] for f in demand_forecasts for item in req.items if f["item_sku"] == item.item_sku),
+        default=14,
+    )
+    now = datetime.now()
+    order_id = str(len(restocking_orders) + 1)
+    order = {
+        "id": order_id,
+        "order_number": f"RST-{now.year}-{int(order_id):04d}",
+        "items": [item.model_dump() for item in req.items],
+        "total_cost": total,
+        "lead_time_days": lead,
+        "created_date": now.isoformat(),
+        "expected_delivery": (now + timedelta(days=lead)).isoformat(),
+        "status": "Submitted",
+    }
+    restocking_orders.append(order)
+    return order
+
+@app.get("/api/restocking/orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    """List all submitted restocking orders."""
+    return restocking_orders
 
 if __name__ == "__main__":
     import uvicorn

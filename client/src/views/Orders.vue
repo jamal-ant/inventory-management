@@ -74,6 +74,47 @@
           </table>
         </div>
       </div>
+      <div v-if="restockingOrders.length > 0" class="card">
+        <div class="card-header">
+          <h3 class="card-title">{{ t('orders.submittedRestocking.title') }} ({{ restockingOrders.length }})</h3>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t('orders.submittedRestocking.orderNumber') }}</th>
+                <th>{{ t('orders.submittedRestocking.items') }}</th>
+                <th>{{ t('orders.submittedRestocking.totalCost') }}</th>
+                <th>{{ t('orders.submittedRestocking.leadTime') }}</th>
+                <th>{{ t('orders.submittedRestocking.expectedDelivery') }}</th>
+                <th>{{ t('orders.submittedRestocking.status') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in restockingOrders" :key="order.id">
+                <td><strong>{{ order.order_number }}</strong></td>
+                <td>
+                  <details class="items-details">
+                    <summary class="items-summary">
+                      {{ t('orders.itemsCount', { count: order.items.length }) }}
+                    </summary>
+                    <div class="items-dropdown">
+                      <div v-for="item in order.items" :key="item.item_sku" class="item-entry">
+                        <span class="item-name">{{ item.item_name }}</span>
+                        <span class="item-meta">{{ t('orders.quantity') }}: {{ item.quantity }} @ {{ currencySymbol }}{{ item.unit_cost }}</span>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td><strong>{{ currencySymbol }}{{ order.total_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong></td>
+                <td>{{ order.lead_time_days }} {{ t('orders.submittedRestocking.days') }}</td>
+                <td>{{ formatDate(order.expected_delivery) }}</td>
+                <td><span class="badge info">{{ order.status }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -95,6 +136,7 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const restockingOrders = ref([])
 
     // Use shared filters
     const {
@@ -117,6 +159,11 @@ export default {
           const dateB = new Date(b.order_date)
           return dateA - dateB
         })
+        try {
+          restockingOrders.value = await api.getRestockingOrders()
+        } catch (err) {
+          console.error('Failed to load restocking orders:', err)
+        }
       } catch (err) {
         error.value = 'Failed to load orders: ' + err.message
       } finally {
@@ -165,7 +212,8 @@ export default {
       formatDate,
       currencySymbol,
       translateProductName,
-      translateCustomerName
+      translateCustomerName,
+      restockingOrders
     }
   }
 }
